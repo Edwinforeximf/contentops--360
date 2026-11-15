@@ -23,3 +23,10 @@ input[type="color"]{width:100%;height:48px;padding:4px}
 .toolbar{gap:12px;flex-wrap:wrap}
 .handoff-modal .formgrid{grid-template-columns:repeat(2,minmax(0,1fr));margin:12px 0}
 @media(max-width:600px){.handoff-modal .formgrid{grid-template-columns:1fr}.toolbar .secondary{width:100%}}
+
+.column{border:1px solid transparent;transition:background-color .2s,border-color .2s}
+.stage-header{display:flex;align-items:center;gap:10px;justify-content:space-between;margin:0 0 14px}
+.stage-header small{color:#667085;font-size:13px}
+.stage-pill{color:white;padding:7px 14px;border-radius:999px;font-size:13px;font-weight:600}
+.project-admin-row{display:flex;align-items:center;justify-content:space-between;gap:12px;border-bottom:1px solid #e7ebf2;padding:14px 0;flex-wrap:wrap}
+.project-admin-row .actions{margin:0}
