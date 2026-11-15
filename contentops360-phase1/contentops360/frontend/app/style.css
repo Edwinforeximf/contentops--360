@@ -30,3 +30,14 @@ input[type="color"]{width:100%;height:48px;padding:4px}
 .stage-pill{color:white;padding:7px 14px;border-radius:999px;font-size:13px;font-weight:600}
 .project-admin-row{display:flex;align-items:center;justify-content:space-between;gap:12px;border-bottom:1px solid #e7ebf2;padding:14px 0;flex-wrap:wrap}
 .project-admin-row .actions{margin:0}
+
+.task-tags{display:flex;gap:6px;flex-wrap:wrap;margin-top:9px}
+.priority-tag,.creative-tag{font-size:11px;font-weight:700;padding:4px 8px;border-radius:6px;text-transform:uppercase}
+.priority-low{background:#e5e7eb;color:#374151}.priority-medium{background:#dbeafe;color:#1d4ed8}.priority-high{background:#ffedd5;color:#9a3412}.priority-urgent{background:#fee2e2;color:#b91c1c;border:1px solid #ef4444}
+.creative-tag{background:#f3e8ff;color:#6b21a8}
+.task-detail-modal{max-height:88vh;overflow-y:auto;width:min(94vw,750px)}
+.pic-group{border-top:1px solid #e5e7eb;padding:10px 0}
+.pic-checks{display:flex;flex-wrap:wrap;gap:8px 14px;margin-top:8px}
+.pic-checks label{display:flex;align-items:center;gap:6px;font-size:13px}
+.pic-checks input{width:auto}
+.pic-create{grid-column:1/-1}
