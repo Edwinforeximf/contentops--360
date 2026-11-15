@@ -20,6 +20,11 @@ Base = declarative_base()
 hasher = PasswordHash.recommended()
 now = lambda: datetime.now(timezone.utc)
 
+class AppSetting(Base):
+    __tablename__='app_settings'
+    key=Column(String(100),primary_key=True)
+    value=Column(Text,nullable=False)
+
 class User(Base):
     __tablename__='users'
     id=Column(Integer,primary_key=True); email=Column(String(255),unique=True,nullable=False); name=Column(String(120),nullable=False); password_hash=Column(Text,nullable=False); role=Column(String(32),nullable=False,default='content'); active=Column(Boolean,default=True)
@@ -100,6 +105,37 @@ class ProjectIn(BaseModel): title:str=Field(min_length=2); description:str=''
 class TaskIn(BaseModel): project_id:int; title:str=Field(min_length=2); stage:str='content'; assignee_id:Optional[int]=None; planned_start:Optional[datetime]=None; planned_end:Optional[datetime]=None; notes:str=''; asset_url:str=''
 class TaskPatch(BaseModel): title:Optional[str]=None; stage:Optional[str]=None; assignee_id:Optional[int]=None; planned_start:Optional[datetime]=None; planned_end:Optional[datetime]=None; notes:Optional[str]=None; asset_url:Optional[str]=None
 class ReviewIn(BaseModel): decision:str; comment:str=''
+
+DEFAULT_SETTINGS={'app_name':'ContentOps 360','subtitle':'PRODUCTION WORKSPACE','login_title':'Masuk ke dashboard','login_description':'Production timeline, approval, dan KPI dalam satu workspace.','primary_color':'#2859e5','accent_color':'#69a3ff','sidebar_color':'#0b1630','background_color':'#f5f7fb'}
+class SettingsIn(BaseModel):
+    app_name:str=Field(min_length=2,max_length=80)
+    subtitle:str=Field(max_length=120)
+    login_title:str=Field(max_length=120)
+    login_description:str=Field(max_length=300)
+    primary_color:str
+    accent_color:str
+    sidebar_color:str
+    background_color:str
+
+@app.get('/settings')
+def get_settings(s:Session=Depends(db)):
+    result=DEFAULT_SETTINGS.copy()
+    for row in s.scalars(select(AppSetting)):result[row.key]=row.value
+    return result
+
+@app.patch('/settings')
+def update_settings(v:SettingsIn,s:Session=Depends(db),u:User=Depends(current)):
+    require(u,['admin'])
+    data=v.model_dump()
+    import re
+    for key in ['primary_color','accent_color','sidebar_color','background_color']:
+        if not re.fullmatch(r'#[0-9a-fA-F]{6}',data[key]):raise HTTPException(400,'Invalid hex color: '+key)
+    for key,value in data.items():
+        row=s.get(AppSetting,key)
+        if row:row.value=value
+        else:s.add(AppSetting(key=key,value=value))
+    s.commit()
+    return get_settings(s)
 
 @app.get('/health')
 def health(): return {'ok':True}
