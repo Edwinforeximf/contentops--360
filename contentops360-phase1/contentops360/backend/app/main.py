@@ -6,7 +6,7 @@ import jwt
 from fastapi import FastAPI, Depends, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
-from sqlalchemy import create_engine, Column, Integer, String, DateTime, ForeignKey, Text, Boolean, select, func
+from sqlalchemy import inspect, text, create_engine, Column, Integer, String, DateTime, ForeignKey, Text, Boolean, select, func
 from sqlalchemy.orm import declarative_base, sessionmaker, Session
 from pwdlib import PasswordHash
 
@@ -33,7 +33,7 @@ class Project(Base):
     id=Column(Integer,primary_key=True); title=Column(String(200),nullable=False); description=Column(Text,default=''); created_by=Column(Integer,ForeignKey('users.id')); created_at=Column(DateTime(timezone=True),default=now)
 class Task(Base):
     __tablename__='tasks'
-    id=Column(Integer,primary_key=True); project_id=Column(Integer,ForeignKey('projects.id'),nullable=False); title=Column(String(200),nullable=False); stage=Column(String(32),default='content'); status=Column(String(32),default='todo'); assignee_id=Column(Integer,ForeignKey('users.id')); planned_start=Column(DateTime(timezone=True)); planned_end=Column(DateTime(timezone=True)); actual_start=Column(DateTime(timezone=True)); actual_end=Column(DateTime(timezone=True)); asset_url=Column(Text,default=''); notes=Column(Text,default=''); created_at=Column(DateTime(timezone=True),default=now)
+    id=Column(Integer,primary_key=True); project_id=Column(Integer,ForeignKey('projects.id'),nullable=False); title=Column(String(200),nullable=False); stage=Column(String(32),default='content'); status=Column(String(32),default='todo'); assignee_id=Column(Integer,ForeignKey('users.id')); planned_start=Column(DateTime(timezone=True)); planned_end=Column(DateTime(timezone=True)); actual_start=Column(DateTime(timezone=True)); actual_end=Column(DateTime(timezone=True)); asset_url=Column(Text,default=''); notes=Column(Text,default=''); card_color=Column(String(7),default='#ffffff'); created_at=Column(DateTime(timezone=True),default=now)
 class StageRun(Base):
     __tablename__='stage_runs'
     id=Column(Integer,primary_key=True)
@@ -59,6 +59,10 @@ class Event(Base):
 @asynccontextmanager
 async def lifespan(app):
     Base.metadata.create_all(bind=engine)
+    # Additive migration: preserve existing tasks, users, and stage history.
+    with engine.begin() as conn:
+        if 'card_color' not in [x['name'] for x in inspect(conn).get_columns('tasks')]:
+            conn.execute(text("ALTER TABLE tasks ADD COLUMN card_color VARCHAR(7) DEFAULT '#ffffff'"))
     # Non-destructive migration for existing Phase 1 tasks.
     with SessionLocal() as s:
         existing=s.scalars(select(Task)).all()
@@ -96,14 +100,14 @@ def task_json(t,s):
     stage_seconds=0
     if run:
         stage_seconds=sum(max(0,((e.stopped_at or now())-e.started_at).total_seconds()) for e in entries if e.user_id==run.assignee_id and e.started_at >= (run.accepted_at or run.received_at))
-    return {'handoff_status':run.status if run else None,'stage_run_id':run.id if run else None,'stage_seconds':round(stage_seconds),'id':t.id,'project_id':t.project_id,'title':t.title,'stage':t.stage,'status':t.status,'assignee_id':t.assignee_id,'planned_start':stamp(t.planned_start),'planned_end':stamp(t.planned_end),'actual_start':stamp(t.actual_start),'actual_end':stamp(t.actual_end),'asset_url':t.asset_url,'notes':t.notes,'tracked_seconds':round(seconds),'timer_running':any(e.stopped_at is None for e in entries)}
+    return {'handoff_status':run.status if run else None,'stage_run_id':run.id if run else None,'stage_seconds':round(stage_seconds),'id':t.id,'project_id':t.project_id,'title':t.title,'stage':t.stage,'status':t.status,'assignee_id':t.assignee_id,'planned_start':stamp(t.planned_start),'planned_end':stamp(t.planned_end),'actual_start':stamp(t.actual_start),'actual_end':stamp(t.actual_end),'asset_url':t.asset_url,'notes':t.notes,'card_color':t.card_color or '#ffffff','tracked_seconds':round(seconds),'timer_running':any(e.stopped_at is None for e in entries)}
 
 class LoginIn(BaseModel): email:str; password:str
 class SetupIn(LoginIn): name:str=Field(min_length=2)
 class UserIn(SetupIn): role:str='content'
 class ProjectIn(BaseModel): title:str=Field(min_length=2); description:str=''
 class TaskIn(BaseModel): project_id:int; title:str=Field(min_length=2); stage:str='content'; assignee_id:Optional[int]=None; planned_start:Optional[datetime]=None; planned_end:Optional[datetime]=None; notes:str=''; asset_url:str=''
-class TaskPatch(BaseModel): title:Optional[str]=None; stage:Optional[str]=None; assignee_id:Optional[int]=None; planned_start:Optional[datetime]=None; planned_end:Optional[datetime]=None; notes:Optional[str]=None; asset_url:Optional[str]=None
+class TaskPatch(BaseModel): card_color:Optional[str]=None; title:Optional[str]=None; stage:Optional[str]=None; assignee_id:Optional[int]=None; planned_start:Optional[datetime]=None; planned_end:Optional[datetime]=None; notes:Optional[str]=None; asset_url:Optional[str]=None
 class ReviewIn(BaseModel): decision:str; comment:str=''
 
 DEFAULT_SETTINGS={'app_name':'ContentOps 360','subtitle':'PRODUCTION WORKSPACE','login_title':'Masuk ke dashboard','login_description':'Production timeline, approval, dan KPI dalam satu workspace.','primary_color':'#2859e5','accent_color':'#69a3ff','sidebar_color':'#0b1630','background_color':'#f5f7fb'}
@@ -193,6 +197,8 @@ def patch_task(task_id:int,v:TaskPatch,s:Session=Depends(db),u:User=Depends(curr
     if 'stage' in changes:raise HTTPException(409,'Use handoff endpoint to move stages')
     if 'assignee_id' in changes:raise HTTPException(409,'Use handoff endpoint to change PIC')
     if 'assignee_id' in changes and changes['assignee_id'] is not None and not s.get(User,changes['assignee_id']):raise HTTPException(400,'Assignee not found')
+    if 'card_color' in changes and (changes['card_color'] is None or not __import__('re').fullmatch(r'#[0-9a-fA-F]{6}',changes['card_color'])):raise HTTPException(400,'Invalid card color')
+    if 'card_color' in changes and u.role!='admin':raise HTTPException(403,'Only admin can change card color')
     for k,val in changes.items():setattr(t,k,val)
     if t.planned_start and t.planned_end and t.planned_end<=t.planned_start:raise HTTPException(400,'Invalid deadline')
     s.add(Event(task_id=t.id,actor_id=u.id,action='updated',detail=','.join(changes)));s.commit();return task_json(t,s)
@@ -227,6 +233,7 @@ class HandoffIn(BaseModel):
     next_stage:str
     assignee_id:int
     planned_end:Optional[datetime]=None
+    planned_start:Optional[datetime]=None
 
 @app.post('/tasks/{task_id}/accept')
 def accept_handoff(task_id:int,s:Session=Depends(db),u:User=Depends(current)):
@@ -250,13 +257,14 @@ def handoff(task_id:int,v:HandoffIn,s:Session=Depends(db),u:User=Depends(current
     if not run or run.status not in ['completed_work','approved']:raise HTTPException(409,'Complete current stage before handoff')
     if u.id!=t.assignee_id and u.role not in ['admin','manager']:raise HTTPException(403,'Not assigned')
     if s.scalar(select(TimeEntry.id).where(TimeEntry.task_id==task_id,TimeEntry.stopped_at.is_(None))):raise HTTPException(409,'Pause all timers first')
+    if v.planned_start and v.planned_end and v.planned_end<=v.planned_start:raise HTTPException(400,'Deadline must follow start')
     pic=s.get(User,v.assignee_id)
     if not pic or not pic.active:raise HTTPException(400,'Invalid PIC')
     if t.stage=='review' and t.status!='approved':raise HTTPException(409,'Reviewer approval required')
     run.status='completed';run.completed_at=now()
     old=t.stage;t.stage=v.next_stage;t.assignee_id=pic.id;t.status='pending_acceptance'
     t.actual_start=None;t.actual_end=None
-    t.planned_start=None;t.planned_end=v.planned_end
+    t.planned_start=v.planned_start;t.planned_end=v.planned_end
     s.add(StageRun(task_id=task_id,stage=v.next_stage,assignee_id=pic.id,status='pending_acceptance',planned_end=v.planned_end))
     s.add(Event(task_id=task_id,actor_id=u.id,action='handoff',detail=f'{old} -> {v.next_stage}; PIC {pic.id}'))
     s.commit();return task_json(t,s)
@@ -298,3 +306,33 @@ def dashboard(s:Session=Depends(db),u:User=Depends(current)):
     eligible=[t for t in completed if t.actual_end and t.planned_end]
     overdue=sum(1 for t in ts if t.planned_end and t.planned_end<now() and t.status not in ['approved','published'])
     return {'total_tasks':len(ts),'completed':len(completed),'overdue':overdue,'on_time_rate':round(100*len(ontime)/len(eligible),1) if eligible else None,'on_time_sample':len(eligible)}
+
+@app.delete('/tasks/{task_id}')
+def delete_task(task_id:int,s:Session=Depends(db),u:User=Depends(current)):
+    require(u,['admin'])
+    t=s.get(Task,task_id)
+    if not t:raise HTTPException(404,'Task not found')
+    for model in [TimeEntry,Review,Event,StageRun]:
+        for item in s.scalars(select(model).where(model.task_id==task_id)).all():s.delete(item)
+    s.delete(t);s.commit()
+    return {'ok':True,'deleted_task_id':task_id}
+
+class ClearBoardIn(BaseModel):
+    confirmation:str
+    project_id:Optional[int]=None
+
+@app.post('/admin/clear-board')
+def clear_board(v:ClearBoardIn,s:Session=Depends(db),u:User=Depends(current)):
+    require(u,['admin'])
+    if v.confirmation!='HAPUS SEMUA TASK':raise HTTPException(400,'Confirmation phrase mismatch')
+    q=select(Task)
+    if v.project_id is not None:
+        if not s.get(Project,v.project_id):raise HTTPException(404,'Project not found')
+        q=q.where(Task.project_id==v.project_id)
+    target=s.scalars(q).all()
+    for t in target:
+        for model in [TimeEntry,Review,Event,StageRun]:
+            for item in s.scalars(select(model).where(model.task_id==t.id)).all():s.delete(item)
+        s.delete(t)
+    s.commit()
+    return {'ok':True,'deleted_tasks':len(target)}
