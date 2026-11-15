@@ -277,7 +277,7 @@ def timer(task_id:int,action:str,s:Session=Depends(db),u:User=Depends(current)):
 
 class HandoffIn(BaseModel):
     next_stage:str
-    assignee_id:int
+    assignee_id:Optional[int]=None
     planned_end:Optional[datetime]=None
     planned_start:Optional[datetime]=None
 
@@ -286,6 +286,7 @@ def accept_handoff(task_id:int,s:Session=Depends(db),u:User=Depends(current)):
     t=s.get(Task,task_id)
     if not t:raise HTTPException(404,'Task not found')
     run=s.scalar(select(StageRun).where(StageRun.task_id==task_id,StageRun.completed_at.is_(None)).order_by(StageRun.id.desc()))
+    if t.stage in ['review','publish']:raise HTTPException(409,'Review and Publish do not require acceptance')
     if not run or run.status!='pending_acceptance':raise HTTPException(409,'No pending handoff')
     if run.assignee_id!=u.id:raise HTTPException(403,'Only assigned PIC can accept')
     run.status='accepted';run.accepted_at=now();t.status='todo'
@@ -301,20 +302,26 @@ def handoff(task_id:int,v:HandoffIn,s:Session=Depends(db),u:User=Depends(current
     if v.next_stage!=stages[stages.index(t.stage)+1]:raise HTTPException(409,'Only next stage allowed')
     run=s.scalar(select(StageRun).where(StageRun.task_id==task_id,StageRun.completed_at.is_(None)).order_by(StageRun.id.desc()))
     if not run or run.status not in ['completed_work','approved']:raise HTTPException(409,'Complete current stage before handoff')
-    if u.id!=t.assignee_id and u.role not in ['admin','manager']:raise HTTPException(403,'Not assigned')
+    if t.stage=='review':
+        require(u,['admin','manager','reviewer'])
+    elif u.id!=t.assignee_id and u.role not in ['admin','manager']:raise HTTPException(403,'Not assigned')
     if s.scalar(select(TimeEntry.id).where(TimeEntry.task_id==task_id,TimeEntry.stopped_at.is_(None))):raise HTTPException(409,'Pause all timers first')
     if s.scalar(select(WorkItem.id).where(WorkItem.task_id==task_id,WorkItem.stage==t.stage,WorkItem.status!='completed').limit(1)):raise HTTPException(409,'Complete all team work items before handoff')
     if v.planned_start and v.planned_end and v.planned_end<=v.planned_start:raise HTTPException(400,'Deadline must follow start')
-    pic=s.get(User,v.assignee_id)
-    if not pic or not pic.active:raise HTTPException(400,'Invalid PIC')
+    pic=s.get(User,v.assignee_id) if v.next_stage in ['content','footage','editing'] and v.assignee_id else None
+    if v.next_stage in ['content','footage','editing'] and (not pic or not pic.active):raise HTTPException(400,'Invalid PIC')
     if t.stage=='review' and t.status!='approved':raise HTTPException(409,'Reviewer approval required')
     run.status='completed';run.completed_at=now()
-    old=t.stage;t.stage=v.next_stage;t.assignee_id=pic.id;t.status='pending_acceptance'
+    old=t.stage;t.stage=v.next_stage;t.assignee_id=pic.id if pic else None;t.status='pending_acceptance' if pic else ('ready_for_review' if v.next_stage=='review' else 'ready_to_publish')
     t.actual_start=None;t.actual_end=None
     t.planned_start=v.planned_start;t.planned_end=v.planned_end
-    pics=json.loads(t.stage_pics or '{}');pics[v.next_stage]=list(dict.fromkeys([pic.id]+pics.get(v.next_stage,[])));t.stage_pics=json.dumps(pics)
-    s.add(StageRun(task_id=task_id,stage=v.next_stage,assignee_id=pic.id,status='pending_acceptance',planned_end=v.planned_end))
-    s.add(Event(task_id=task_id,actor_id=u.id,action='handoff',detail=f'{old} -> {v.next_stage}; PIC {pic.id}'))
+    if pic:
+        pics=json.loads(t.stage_pics or '{}');pics[v.next_stage]=list(dict.fromkeys([pic.id]+pics.get(v.next_stage,[])));t.stage_pics=json.dumps(pics)
+        s.add(StageRun(task_id=task_id,stage=v.next_stage,assignee_id=pic.id,status='pending_acceptance',planned_end=v.planned_end))
+    else:
+        # No PIC required: retain the previous actor for audit only; no acceptance/timer.
+        s.add(StageRun(task_id=task_id,stage=v.next_stage,assignee_id=u.id,status='completed_work' if v.next_stage=='review' else 'approved',accepted_at=now(),planned_end=v.planned_end))
+    s.add(Event(task_id=task_id,actor_id=u.id,action='handoff',detail=f'{old} -> {v.next_stage}; PIC {pic.id if pic else "none"}'))
     s.commit();return task_json(t,s)
 
 class WorkItemIn(BaseModel):
@@ -401,7 +408,7 @@ def review(task_id:int,v:ReviewIn,s:Session=Depends(db),u:User=Depends(current))
     require(u,['admin','manager','reviewer'])
     t=s.get(Task,task_id)
     if not t:raise HTTPException(404,'Task not found')
-    if t.status!='ready_for_review':raise HTTPException(409,'Task must be ready for review')
+    if t.status not in ['ready_for_review','revision']:raise HTTPException(409,'Task must be ready for review')
     if v.decision not in ['approve','revision']:raise HTTPException(400,'Invalid decision')
     if v.decision=='revision' and not v.comment.strip():raise HTTPException(400,'Revision comment required')
     if t.stage!='review':raise HTTPException(409,'Review must happen in review stage')
@@ -415,7 +422,7 @@ def publish(task_id:int,s:Session=Depends(db),u:User=Depends(current)):
     require(u,['admin','manager','social'])
     t=s.get(Task,task_id)
     if not t:raise HTTPException(404,'Task not found')
-    if t.stage!='publish' or t.status not in ['stage_complete','ready_for_review']:raise HTTPException(409,'Publish stage must be completed first')
+    if t.stage!='publish' or t.status not in ['ready_to_publish','stage_complete','ready_for_review']:raise HTTPException(409,'Task must be in Publish stage')
     t.status='published';s.add(Event(task_id=t.id,actor_id=u.id,action='published'));s.commit();return task_json(t,s)
 @app.get('/tasks/{task_id}/history')
 def history(task_id:int,s:Session=Depends(db),u:User=Depends(current)):
