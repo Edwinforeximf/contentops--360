@@ -34,7 +34,7 @@ class Project(Base):
     id=Column(Integer,primary_key=True); title=Column(String(200),nullable=False); description=Column(Text,default=''); created_by=Column(Integer,ForeignKey('users.id')); created_at=Column(DateTime(timezone=True),default=now)
 class Task(Base):
     __tablename__='tasks'
-    id=Column(Integer,primary_key=True); project_id=Column(Integer,ForeignKey('projects.id'),nullable=False); title=Column(String(200),nullable=False); stage=Column(String(32),default='content'); status=Column(String(32),default='todo'); assignee_id=Column(Integer,ForeignKey('users.id')); planned_start=Column(DateTime(timezone=True)); planned_end=Column(DateTime(timezone=True)); actual_start=Column(DateTime(timezone=True)); actual_end=Column(DateTime(timezone=True)); asset_url=Column(Text,default=''); notes=Column(Text,default=''); card_color=Column(String(7),default='#ffffff'); priority=Column(String(20),default='medium'); creative_type=Column(String(100),default=''); stage_pics=Column(Text,default='{}'); created_at=Column(DateTime(timezone=True),default=now)
+    id=Column(Integer,primary_key=True); project_id=Column(Integer,ForeignKey('projects.id'),nullable=False); title=Column(String(200),nullable=False); stage=Column(String(32),default='content'); status=Column(String(32),default='todo'); assignee_id=Column(Integer,ForeignKey('users.id')); planned_start=Column(DateTime(timezone=True)); planned_end=Column(DateTime(timezone=True)); actual_start=Column(DateTime(timezone=True)); actual_end=Column(DateTime(timezone=True)); asset_url=Column(Text,default=''); notes=Column(Text,default=''); card_color=Column(String(7),default='#ffffff'); priority=Column(String(20),default='medium'); creative_type=Column(String(40),default=''); stage_pics=Column(Text,default='{}'); created_at=Column(DateTime(timezone=True),default=now)
 class StageRun(Base):
     __tablename__='stage_runs'
     id=Column(Integer,primary_key=True)
@@ -128,7 +128,7 @@ class LoginIn(BaseModel): email:str; password:str
 class SetupIn(LoginIn): name:str=Field(min_length=2)
 class UserIn(SetupIn): role:str='content'
 class ProjectIn(BaseModel): title:str=Field(min_length=2); description:str=''
-class TaskIn(BaseModel): project_id:int; title:str=Field(min_length=2); stage:str='content'; assignee_id:Optional[int]=None; planned_start:Optional[datetime]=None; planned_end:Optional[datetime]=None; notes:str=''; asset_url:str=''; priority:str='medium'; creative_type:str=Field(default='',max_length=100); stage_pics:dict[str,list[int]]=Field(default_factory=dict)
+class TaskIn(BaseModel): project_id:int; title:str=Field(min_length=2); stage:str='content'; assignee_id:Optional[int]=None; planned_start:Optional[datetime]=None; planned_end:Optional[datetime]=None; notes:str=''; asset_url:str=''; priority:str='medium'; creative_type:str=Field(default='',max_length=40); stage_pics:dict[str,list[int]]=Field(default_factory=dict)
 class TaskPatch(BaseModel): priority:Optional[str]=None; creative_type:Optional[str]=None; stage_pics:Optional[dict[str,list[int]]]=None; card_color:Optional[str]=None; title:Optional[str]=None; stage:Optional[str]=None; assignee_id:Optional[int]=None; planned_start:Optional[datetime]=None; planned_end:Optional[datetime]=None; notes:Optional[str]=None; asset_url:Optional[str]=None
 class ReviewIn(BaseModel): decision:str; comment:str=''
 
@@ -209,7 +209,7 @@ def tasks(project_id:Optional[int]=None,s:Session=Depends(db),u:User=Depends(cur
     return [task_json(t,s) for t in s.scalars(q)]
 def validate_task_meta(s,priority,creative_type,pics):
     if priority not in ['low','medium','high','urgent']:raise HTTPException(400,'Invalid priority')
-    if not isinstance(creative_type,str) or len(creative_type)>100:raise HTTPException(400,'Invalid creative type')
+    if not isinstance(creative_type,str) or len(creative_type)>40:raise HTTPException(400,'Invalid creative type')
     for stage,ids in pics.items():
         if stage not in ['content','footage','editing','review','publish'] or len(ids)>20 or len(ids)!=len(set(ids)):raise HTTPException(400,'Invalid stage PIC list')
         if any(not s.get(User,uid) for uid in ids):raise HTTPException(400,'PIC user not found')
@@ -371,6 +371,25 @@ def work_item_action(item_id:int,action:str,s:Session=Depends(db),u:User=Depends
     else:raise HTTPException(400,'Invalid action')
     s.add(Event(task_id=w.task_id,actor_id=u.id,action='work_item_'+action,detail=w.title))
     s.commit();return work_json(w,s)
+
+@app.get('/kpi/work-items')
+def work_item_kpis(s:Session=Depends(db),u:User=Depends(current)):
+    items=s.scalars(select(WorkItem)).all()
+    logs=s.scalars(select(WorkLog)).all()
+    totals={}
+    for w in items:
+        key=str(w.assignee_id)
+        x=totals.setdefault(key,{'user_id':w.assignee_id,'assigned':0,'completed':0,'on_time':0,'overdue':0,'seconds':0})
+        x['assigned']+=1
+        if w.completed_at:
+            x['completed']+=1
+            if w.deadline and w.completed_at<=w.deadline:x['on_time']+=1
+        elif w.deadline and now()>w.deadline:x['overdue']+=1
+    lookup={w.id:w for w in items}
+    for l in logs:
+        w=lookup.get(l.work_item_id)
+        if w:totals[str(w.assignee_id)]['seconds']+=max(0,round(((l.stopped_at or now())-l.started_at).total_seconds()))
+    return list(totals.values())
 
 @app.get('/tasks/{task_id}/stages')
 def stage_history(task_id:int,s:Session=Depends(db),u:User=Depends(current)):
