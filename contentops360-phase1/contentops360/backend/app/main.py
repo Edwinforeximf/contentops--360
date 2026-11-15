@@ -54,6 +54,15 @@ class Event(Base):
 @asynccontextmanager
 async def lifespan(app):
     Base.metadata.create_all(bind=engine)
+    # Non-destructive migration for existing Phase 1 tasks.
+    with SessionLocal() as s:
+        existing=s.scalars(select(Task)).all()
+        for t in existing:
+            has_run=s.scalar(select(StageRun.id).where(StageRun.task_id==t.id).limit(1))
+            if not has_run and t.assignee_id:
+                state='approved' if t.status=='approved' else ('completed_work' if t.status in ['ready_for_review','stage_complete'] else 'accepted')
+                s.add(StageRun(task_id=t.id,stage=t.stage,assignee_id=t.assignee_id,status=state,received_at=t.created_at or now(),accepted_at=t.actual_start or t.created_at or now(),planned_end=t.planned_end))
+        s.commit()
     yield
 app=FastAPI(title='ContentOps 360 API', lifespan=lifespan)
 origins=[x.strip() for x in os.getenv('CORS_ORIGINS','http://localhost:3000').split(',') if x.strip()]
