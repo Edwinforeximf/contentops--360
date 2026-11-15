@@ -34,7 +34,7 @@ class Project(Base):
     id=Column(Integer,primary_key=True); title=Column(String(200),nullable=False); description=Column(Text,default=''); created_by=Column(Integer,ForeignKey('users.id')); created_at=Column(DateTime(timezone=True),default=now)
 class Task(Base):
     __tablename__='tasks'
-    id=Column(Integer,primary_key=True); project_id=Column(Integer,ForeignKey('projects.id'),nullable=False); title=Column(String(200),nullable=False); stage=Column(String(32),default='content'); status=Column(String(32),default='todo'); assignee_id=Column(Integer,ForeignKey('users.id')); planned_start=Column(DateTime(timezone=True)); planned_end=Column(DateTime(timezone=True)); actual_start=Column(DateTime(timezone=True)); actual_end=Column(DateTime(timezone=True)); asset_url=Column(Text,default=''); notes=Column(Text,default=''); card_color=Column(String(7),default='#ffffff'); priority=Column(String(20),default='medium'); creative_type=Column(String(40),default='video_ads'); stage_pics=Column(Text,default='{}'); created_at=Column(DateTime(timezone=True),default=now)
+    id=Column(Integer,primary_key=True); project_id=Column(Integer,ForeignKey('projects.id'),nullable=False); title=Column(String(200),nullable=False); stage=Column(String(32),default='content'); status=Column(String(32),default='todo'); assignee_id=Column(Integer,ForeignKey('users.id')); planned_start=Column(DateTime(timezone=True)); planned_end=Column(DateTime(timezone=True)); actual_start=Column(DateTime(timezone=True)); actual_end=Column(DateTime(timezone=True)); asset_url=Column(Text,default=''); notes=Column(Text,default=''); card_color=Column(String(7),default='#ffffff'); priority=Column(String(20),default='medium'); creative_type=Column(String(100),default=''); stage_pics=Column(Text,default='{}'); created_at=Column(DateTime(timezone=True),default=now)
 class StageRun(Base):
     __tablename__='stage_runs'
     id=Column(Integer,primary_key=True)
@@ -47,6 +47,25 @@ class StageRun(Base):
     completed_at=Column(DateTime(timezone=True))
     planned_end=Column(DateTime(timezone=True))
 
+class WorkItem(Base):
+    __tablename__='work_items'
+    id=Column(Integer,primary_key=True)
+    task_id=Column(Integer,ForeignKey('tasks.id'),nullable=False,index=True)
+    stage=Column(String(32),nullable=False)
+    title=Column(String(120),nullable=False)
+    assignee_id=Column(Integer,ForeignKey('users.id'),nullable=False)
+    status=Column(String(30),default='pending_acceptance')
+    received_at=Column(DateTime(timezone=True),default=now)
+    accepted_at=Column(DateTime(timezone=True))
+    completed_at=Column(DateTime(timezone=True))
+    deadline=Column(DateTime(timezone=True))
+class WorkLog(Base):
+    __tablename__='work_logs'
+    id=Column(Integer,primary_key=True)
+    work_item_id=Column(Integer,ForeignKey('work_items.id'),nullable=False,index=True)
+    user_id=Column(Integer,ForeignKey('users.id'),nullable=False)
+    started_at=Column(DateTime(timezone=True),nullable=False)
+    stopped_at=Column(DateTime(timezone=True))
 class TimeEntry(Base):
     __tablename__='time_entries'
     id=Column(Integer,primary_key=True); task_id=Column(Integer,ForeignKey('tasks.id'),nullable=False); user_id=Column(Integer,ForeignKey('users.id'),nullable=False); started_at=Column(DateTime(timezone=True),nullable=False); stopped_at=Column(DateTime(timezone=True))
@@ -103,13 +122,13 @@ def task_json(t,s):
     stage_seconds=0
     if run:
         stage_seconds=sum(max(0,((e.stopped_at or now())-e.started_at).total_seconds()) for e in entries if e.user_id==run.assignee_id and e.started_at >= (run.accepted_at or run.received_at))
-    return {'handoff_status':run.status if run else None,'stage_run_id':run.id if run else None,'stage_seconds':round(stage_seconds),'id':t.id,'project_id':t.project_id,'title':t.title,'stage':t.stage,'status':t.status,'assignee_id':t.assignee_id,'planned_start':stamp(t.planned_start),'planned_end':stamp(t.planned_end),'actual_start':stamp(t.actual_start),'actual_end':stamp(t.actual_end),'asset_url':t.asset_url,'notes':t.notes,'card_color':t.card_color or '#ffffff','priority':t.priority or 'medium','creative_type':t.creative_type or 'video_ads','stage_pics':json.loads(t.stage_pics or '{}'),'tracked_seconds':round(seconds),'timer_running':any(e.stopped_at is None for e in entries)}
+    return {'handoff_status':run.status if run else None,'stage_run_id':run.id if run else None,'stage_seconds':round(stage_seconds),'id':t.id,'project_id':t.project_id,'title':t.title,'stage':t.stage,'status':t.status,'assignee_id':t.assignee_id,'planned_start':stamp(t.planned_start),'planned_end':stamp(t.planned_end),'actual_start':stamp(t.actual_start),'actual_end':stamp(t.actual_end),'asset_url':t.asset_url,'notes':t.notes,'card_color':t.card_color or '#ffffff','priority':t.priority or 'medium','creative_type':t.creative_type or '','stage_pics':json.loads(t.stage_pics or '{}'),'tracked_seconds':round(seconds),'timer_running':any(e.stopped_at is None for e in entries)}
 
 class LoginIn(BaseModel): email:str; password:str
 class SetupIn(LoginIn): name:str=Field(min_length=2)
 class UserIn(SetupIn): role:str='content'
 class ProjectIn(BaseModel): title:str=Field(min_length=2); description:str=''
-class TaskIn(BaseModel): project_id:int; title:str=Field(min_length=2); stage:str='content'; assignee_id:Optional[int]=None; planned_start:Optional[datetime]=None; planned_end:Optional[datetime]=None; notes:str=''; asset_url:str=''; priority:str='medium'; creative_type:str='video_ads'; stage_pics:dict[str,list[int]]=Field(default_factory=dict)
+class TaskIn(BaseModel): project_id:int; title:str=Field(min_length=2); stage:str='content'; assignee_id:Optional[int]=None; planned_start:Optional[datetime]=None; planned_end:Optional[datetime]=None; notes:str=''; asset_url:str=''; priority:str='medium'; creative_type:str=Field(default='',max_length=100); stage_pics:dict[str,list[int]]=Field(default_factory=dict)
 class TaskPatch(BaseModel): priority:Optional[str]=None; creative_type:Optional[str]=None; stage_pics:Optional[dict[str,list[int]]]=None; card_color:Optional[str]=None; title:Optional[str]=None; stage:Optional[str]=None; assignee_id:Optional[int]=None; planned_start:Optional[datetime]=None; planned_end:Optional[datetime]=None; notes:Optional[str]=None; asset_url:Optional[str]=None
 class ReviewIn(BaseModel): decision:str; comment:str=''
 
@@ -190,7 +209,7 @@ def tasks(project_id:Optional[int]=None,s:Session=Depends(db),u:User=Depends(cur
     return [task_json(t,s) for t in s.scalars(q)]
 def validate_task_meta(s,priority,creative_type,pics):
     if priority not in ['low','medium','high','urgent']:raise HTTPException(400,'Invalid priority')
-    if creative_type not in ['video_ads','image_ads','reels','shorts','carousel','static_post','story','livestream','article','other']:raise HTTPException(400,'Invalid creative type')
+    if not isinstance(creative_type,str) or len(creative_type)>100:raise HTTPException(400,'Invalid creative type')
     for stage,ids in pics.items():
         if stage not in ['content','footage','editing','review','publish'] or len(ids)>20 or len(ids)!=len(set(ids)):raise HTTPException(400,'Invalid stage PIC list')
         if any(not s.get(User,uid) for uid in ids):raise HTTPException(400,'PIC user not found')
@@ -284,6 +303,7 @@ def handoff(task_id:int,v:HandoffIn,s:Session=Depends(db),u:User=Depends(current
     if not run or run.status not in ['completed_work','approved']:raise HTTPException(409,'Complete current stage before handoff')
     if u.id!=t.assignee_id and u.role not in ['admin','manager']:raise HTTPException(403,'Not assigned')
     if s.scalar(select(TimeEntry.id).where(TimeEntry.task_id==task_id,TimeEntry.stopped_at.is_(None))):raise HTTPException(409,'Pause all timers first')
+    if s.scalar(select(WorkItem.id).where(WorkItem.task_id==task_id,WorkItem.stage==t.stage,WorkItem.status!='completed').limit(1)):raise HTTPException(409,'Complete all team work items before handoff')
     if v.planned_start and v.planned_end and v.planned_end<=v.planned_start:raise HTTPException(400,'Deadline must follow start')
     pic=s.get(User,v.assignee_id)
     if not pic or not pic.active:raise HTTPException(400,'Invalid PIC')
@@ -296,6 +316,61 @@ def handoff(task_id:int,v:HandoffIn,s:Session=Depends(db),u:User=Depends(current
     s.add(StageRun(task_id=task_id,stage=v.next_stage,assignee_id=pic.id,status='pending_acceptance',planned_end=v.planned_end))
     s.add(Event(task_id=task_id,actor_id=u.id,action='handoff',detail=f'{old} -> {v.next_stage}; PIC {pic.id}'))
     s.commit();return task_json(t,s)
+
+class WorkItemIn(BaseModel):
+    stage:str
+    title:str=Field(min_length=2,max_length=120)
+    assignee_id:int
+    deadline:Optional[datetime]=None
+
+def work_json(w,s):
+    logs=s.scalars(select(WorkLog).where(WorkLog.work_item_id==w.id)).all()
+    secs=sum(max(0,((x.stopped_at or now())-x.started_at).total_seconds()) for x in logs)
+    return {'id':w.id,'task_id':w.task_id,'stage':w.stage,'title':w.title,'assignee_id':w.assignee_id,'status':w.status,'received_at':stamp(w.received_at),'accepted_at':stamp(w.accepted_at),'completed_at':stamp(w.completed_at),'deadline':stamp(w.deadline),'seconds':round(secs),'timer_running':any(x.stopped_at is None for x in logs)}
+
+@app.get('/tasks/{task_id}/work-items')
+def list_work_items(task_id:int,s:Session=Depends(db),u:User=Depends(current)):
+    if not s.get(Task,task_id):raise HTTPException(404,'Task not found')
+    return [work_json(w,s) for w in s.scalars(select(WorkItem).where(WorkItem.task_id==task_id).order_by(WorkItem.id))]
+
+@app.post('/tasks/{task_id}/work-items')
+def add_work_item(task_id:int,v:WorkItemIn,s:Session=Depends(db),u:User=Depends(current)):
+    require(u,['admin','manager'])
+    t=s.get(Task,task_id)
+    if not t:raise HTTPException(404,'Task not found')
+    if v.stage!=t.stage:raise HTTPException(409,'Create work items in current stage only')
+    pic=s.get(User,v.assignee_id)
+    if not pic or not pic.active:raise HTTPException(400,'Invalid PIC')
+    w=WorkItem(task_id=task_id,stage=v.stage,title=v.title,assignee_id=v.assignee_id,deadline=v.deadline)
+    s.add(w);s.add(Event(task_id=task_id,actor_id=u.id,action='work_item_created',detail=v.title));s.commit();s.refresh(w)
+    return work_json(w,s)
+
+@app.post('/work-items/{item_id}/{action}')
+def work_item_action(item_id:int,action:str,s:Session=Depends(db),u:User=Depends(current)):
+    w=s.get(WorkItem,item_id)
+    if not w:raise HTTPException(404,'Work item not found')
+    t=s.get(Task,w.task_id)
+    if not t or t.stage!=w.stage:raise HTTPException(409,'Work item stage is no longer active')
+    if u.id!=w.assignee_id:raise HTTPException(403,'Only assigned PIC may operate this timer')
+    if action=='accept':
+        if w.status!='pending_acceptance':raise HTTPException(409,'Already accepted')
+        w.status='accepted';w.accepted_at=now()
+    elif action=='start':
+        if w.status not in ['accepted','working']:raise HTTPException(409,'Accept first')
+        if s.scalar(select(WorkLog.id).where(WorkLog.work_item_id==w.id,WorkLog.stopped_at.is_(None))):raise HTTPException(409,'Timer already running')
+        s.add(WorkLog(work_item_id=w.id,user_id=u.id,started_at=now()));w.status='working'
+    elif action in ['pause','complete']:
+        running=s.scalar(select(WorkLog).where(WorkLog.work_item_id==w.id,WorkLog.stopped_at.is_(None)).order_by(WorkLog.id.desc()))
+        if action=='pause':
+            if not running:raise HTTPException(409,'Timer not running')
+            running.stopped_at=now()
+        else:
+            if w.status not in ['accepted','working']:raise HTTPException(409,'Accept first')
+            if running:running.stopped_at=now()
+            w.status='completed';w.completed_at=now()
+    else:raise HTTPException(400,'Invalid action')
+    s.add(Event(task_id=w.task_id,actor_id=u.id,action='work_item_'+action,detail=w.title))
+    s.commit();return work_json(w,s)
 
 @app.get('/tasks/{task_id}/stages')
 def stage_history(task_id:int,s:Session=Depends(db),u:User=Depends(current)):
