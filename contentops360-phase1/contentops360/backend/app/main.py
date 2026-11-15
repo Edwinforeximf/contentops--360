@@ -293,7 +293,7 @@ def timer(task_id:int,action:str,s:Session=Depends(db),u:User=Depends(current)):
     if t.status in ['approved','published']:raise HTTPException(409,'Task already finalized')
     run=s.scalar(select(StageRun).where(StageRun.task_id==task_id,StageRun.completed_at.is_(None)).order_by(StageRun.id.desc()))
     if t.stage=='publish':raise HTTPException(409,'Publish has no timer')
-    if not run or (run.status!='accepted' and not (t.stage=='review' and run.status in ['completed_work','working_review'])):raise HTTPException(409,'PIC must accept the handoff first')
+    if not run or (run.status!='accepted' and not (t.stage=='review' and run.status in ['awaiting_review','working_review'])):raise HTTPException(409,'PIC must accept the handoff first')
     open_entry=s.scalar(select(TimeEntry).where(TimeEntry.task_id==task_id,TimeEntry.user_id==u.id,TimeEntry.stopped_at.is_(None)))
     if action in ['start','resume']:
         if open_entry:raise HTTPException(409,'Timer already running')
@@ -360,7 +360,7 @@ def handoff(task_id:int,v:HandoffIn,s:Session=Depends(db),u:User=Depends(current
         s.add(StageRun(task_id=task_id,stage=v.next_stage,assignee_id=pic.id,status='pending_acceptance',planned_end=v.planned_end))
     else:
         # No PIC required: retain the previous actor for audit only; no acceptance/timer.
-        s.add(StageRun(task_id=task_id,stage=v.next_stage,assignee_id=u.id,status='completed_work' if v.next_stage=='review' else 'approved',accepted_at=now(),planned_end=v.planned_end))
+        s.add(StageRun(task_id=task_id,stage=v.next_stage,assignee_id=u.id,status='awaiting_review' if v.next_stage=='review' else 'approved',accepted_at=now(),planned_end=v.planned_end))
     s.add(Event(task_id=task_id,actor_id=u.id,action='handoff',detail=f'{old} -> {v.next_stage}; PIC {pic.id if pic else "none"}'))
     s.commit();return task_json(t,s)
 
@@ -453,7 +453,7 @@ def review(task_id:int,v:ReviewIn,s:Session=Depends(db),u:User=Depends(current))
     if v.decision=='revision' and not v.comment.strip():raise HTTPException(400,'Revision comment required')
     if t.stage!='review':raise HTTPException(409,'Review must happen in review stage')
     run=s.scalar(select(StageRun).where(StageRun.task_id==task_id,StageRun.completed_at.is_(None)).order_by(StageRun.id.desc()))
-    if not run or run.status!='completed_work':raise HTTPException(409,'Stop review timer before approving')
+    if not run or run.status!='completed_work':raise HTTPException(409,'Start and stop review timer before approving')
     t.status='approved' if v.decision=='approve' else 'revision'
     run.status='approved' if v.decision=='approve' else 'accepted'
     s.add(Review(task_id=t.id,reviewer_id=u.id,decision=v.decision,comment=v.comment));s.add(Event(task_id=t.id,actor_id=u.id,action='review_'+v.decision,detail=v.comment));s.commit();return task_json(t,s)
