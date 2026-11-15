@@ -28,13 +28,13 @@ class AppSetting(Base):
 
 class User(Base):
     __tablename__='users'
-    id=Column(Integer,primary_key=True); email=Column(String(255),unique=True,nullable=False); name=Column(String(120),nullable=False); password_hash=Column(Text,nullable=False); role=Column(String(32),nullable=False,default='content'); active=Column(Boolean,default=True)
+    id=Column(Integer,primary_key=True); email=Column(String(255),unique=True,nullable=True); name=Column(String(120),nullable=False); password_hash=Column(Text,nullable=False); role=Column(String(64),nullable=False,default='content'); active=Column(Boolean,default=True)
 class Project(Base):
     __tablename__='projects'
     id=Column(Integer,primary_key=True); title=Column(String(200),nullable=False); description=Column(Text,default=''); created_by=Column(Integer,ForeignKey('users.id')); created_at=Column(DateTime(timezone=True),default=now)
 class Task(Base):
     __tablename__='tasks'
-    id=Column(Integer,primary_key=True); project_id=Column(Integer,ForeignKey('projects.id'),nullable=False); title=Column(String(200),nullable=False); stage=Column(String(32),default='content'); status=Column(String(32),default='todo'); assignee_id=Column(Integer,ForeignKey('users.id')); planned_start=Column(DateTime(timezone=True)); planned_end=Column(DateTime(timezone=True)); actual_start=Column(DateTime(timezone=True)); actual_end=Column(DateTime(timezone=True)); asset_url=Column(Text,default=''); notes=Column(Text,default=''); card_color=Column(String(7),default='#ffffff'); priority=Column(String(20),default='medium'); creative_type=Column(String(40),default=''); stage_pics=Column(Text,default='{}'); created_at=Column(DateTime(timezone=True),default=now)
+    id=Column(Integer,primary_key=True); project_id=Column(Integer,ForeignKey('projects.id'),nullable=False); title=Column(String(200),nullable=False); stage=Column(String(32),default='content'); status=Column(String(32),default='todo'); assignee_id=Column(Integer,ForeignKey('users.id')); planned_start=Column(DateTime(timezone=True)); planned_end=Column(DateTime(timezone=True)); actual_start=Column(DateTime(timezone=True)); actual_end=Column(DateTime(timezone=True)); asset_url=Column(Text,default=''); notes=Column(Text,default=''); card_color=Column(String(7),default='#ffffff'); priority=Column(String(20),default='medium'); creative_type=Column(String(40),default=''); stage_pics=Column(Text,default='{}'); footage_output_url=Column(Text,default=''); production_output_url=Column(Text,default=''); created_at=Column(DateTime(timezone=True),default=now)
 class StageRun(Base):
     __tablename__='stage_runs'
     id=Column(Integer,primary_key=True)
@@ -85,6 +85,10 @@ async def lifespan(app):
             conn.execute(text("ALTER TABLE tasks ADD COLUMN card_color VARCHAR(7) DEFAULT '#ffffff'"))
         for col,sql in [('priority',"ALTER TABLE tasks ADD COLUMN priority VARCHAR(20) DEFAULT 'medium'"),('creative_type',"ALTER TABLE tasks ADD COLUMN creative_type VARCHAR(40) DEFAULT 'video_ads'"),('stage_pics',"ALTER TABLE tasks ADD COLUMN stage_pics TEXT DEFAULT '{}' ")]:
             if col not in [x['name'] for x in inspect(conn).get_columns('tasks')]:conn.execute(text(sql))
+        for col in ['footage_output_url','production_output_url']:
+            if col not in [x['name'] for x in inspect(conn).get_columns('tasks')]:conn.execute(text(f'ALTER TABLE tasks ADD COLUMN {col} TEXT DEFAULT \'\''))
+        # Existing email-based accounts remain usable; new accounts may have no email.
+        if engine.dialect.name=='postgresql':conn.execute(text('ALTER TABLE users ALTER COLUMN email DROP NOT NULL'))
     # Non-destructive migration for existing Phase 1 tasks.
     with SessionLocal() as s:
         existing=s.scalars(select(Task)).all()
@@ -110,8 +114,14 @@ def current(authorization:Optional[str]=Header(None),s:Session=Depends(db)):
     if not user or not user.active: raise HTTPException(401,'User unavailable')
     return user
 
-def require(user,roles):
-    if user.role not in roles: raise HTTPException(403,'Insufficient permission')
+BASE_ROLES=['admin','manager','content','educator','production','reviewer','social','ads','viewer']
+def role_map(s):
+    row=s.get(AppSetting,'custom_roles')
+    try:return json.loads(row.value) if row else {}
+    except (ValueError,TypeError):return {}
+def effective_role(user,s):return role_map(s).get(user.role,user.role)
+def require(user,roles,s=None):
+    if (effective_role(user,s) if s is not None else user.role) not in roles:raise HTTPException(403,'Insufficient permission')
 def stamp(v): return v.isoformat() if v else None
 def user_json(u): return {'id':u.id,'email':u.email,'name':u.name,'role':u.role}
 def project_json(p): return {'id':p.id,'title':p.title,'description':p.description,'created_at':stamp(p.created_at)}
@@ -122,14 +132,14 @@ def task_json(t,s):
     stage_seconds=0
     if run:
         stage_seconds=sum(max(0,((e.stopped_at or now())-e.started_at).total_seconds()) for e in entries if e.user_id==run.assignee_id and e.started_at >= (run.accepted_at or run.received_at))
-    return {'handoff_status':run.status if run else None,'stage_run_id':run.id if run else None,'stage_seconds':round(stage_seconds),'id':t.id,'project_id':t.project_id,'title':t.title,'stage':t.stage,'status':t.status,'assignee_id':t.assignee_id,'planned_start':stamp(t.planned_start),'planned_end':stamp(t.planned_end),'actual_start':stamp(t.actual_start),'actual_end':stamp(t.actual_end),'asset_url':t.asset_url,'notes':t.notes,'card_color':t.card_color or '#ffffff','priority':t.priority or 'medium','creative_type':t.creative_type or '','stage_pics':json.loads(t.stage_pics or '{}'),'tracked_seconds':round(seconds),'timer_running':any(e.stopped_at is None for e in entries)}
+    return {'footage_output_url':t.footage_output_url or '', 'production_output_url':t.production_output_url or '', 'handoff_status':run.status if run else None,'stage_run_id':run.id if run else None,'stage_seconds':round(stage_seconds),'id':t.id,'project_id':t.project_id,'title':t.title,'stage':t.stage,'status':t.status,'assignee_id':t.assignee_id,'planned_start':stamp(t.planned_start),'planned_end':stamp(t.planned_end),'actual_start':stamp(t.actual_start),'actual_end':stamp(t.actual_end),'asset_url':t.asset_url,'notes':t.notes,'card_color':t.card_color or '#ffffff','priority':t.priority or 'medium','creative_type':t.creative_type or '','stage_pics':json.loads(t.stage_pics or '{}'),'tracked_seconds':round(seconds),'timer_running':any(e.stopped_at is None for e in entries)}
 
-class LoginIn(BaseModel): email:str; password:str
+class LoginIn(BaseModel): email:str=''; name:str=''; password:str
 class SetupIn(LoginIn): name:str=Field(min_length=2)
-class UserIn(SetupIn): role:str='content'
+class UserIn(BaseModel): name:str=Field(min_length=2); password:str; role:str='content'; email:Optional[str]=None
 class ProjectIn(BaseModel): title:str=Field(min_length=2); description:str=''
-class TaskIn(BaseModel): project_id:int; title:str=Field(min_length=2); stage:str='content'; assignee_id:Optional[int]=None; planned_start:Optional[datetime]=None; planned_end:Optional[datetime]=None; notes:str=''; asset_url:str=''; priority:str='medium'; creative_type:str=Field(default='',max_length=40); stage_pics:dict[str,list[int]]=Field(default_factory=dict)
-class TaskPatch(BaseModel): priority:Optional[str]=None; creative_type:Optional[str]=None; stage_pics:Optional[dict[str,list[int]]]=None; card_color:Optional[str]=None; title:Optional[str]=None; stage:Optional[str]=None; assignee_id:Optional[int]=None; planned_start:Optional[datetime]=None; planned_end:Optional[datetime]=None; notes:Optional[str]=None; asset_url:Optional[str]=None
+class TaskIn(BaseModel): project_id:int; title:str=Field(min_length=2); stage:str='content'; assignee_id:Optional[int]=None; planned_start:Optional[datetime]=None; planned_end:Optional[datetime]=None; notes:str=''; asset_url:str=''; priority:str='medium'; creative_type:str=Field(default='',max_length=40); stage_pics:dict[str,list[int]]=Field(default_factory=dict); footage_output_url:str=''; production_output_url:str=''
+class TaskPatch(BaseModel): priority:Optional[str]=None; creative_type:Optional[str]=None; stage_pics:Optional[dict[str,list[int]]]=None; card_color:Optional[str]=None; title:Optional[str]=None; stage:Optional[str]=None; assignee_id:Optional[int]=None; planned_start:Optional[datetime]=None; planned_end:Optional[datetime]=None; notes:Optional[str]=None; asset_url:Optional[str]=None; footage_output_url:Optional[str]=None; production_output_url:Optional[str]=None
 class ReviewIn(BaseModel): decision:str; comment:str=''
 
 DEFAULT_SETTINGS={'app_name':'ContentOps 360','subtitle':'PRODUCTION WORKSPACE','login_title':'Masuk ke dashboard','login_description':'Production timeline, approval, dan KPI dalam satu workspace.','primary_color':'#2859e5','accent_color':'#69a3ff','sidebar_color':'#0b1630','background_color':'#f5f7fb','stage_content_color':'#777777','stage_footage_color':'#287dcc','stage_editing_color':'#ad8526','stage_review_color':'#8055a5','stage_publish_color':'#27885e','stage_content_label':'Script','stage_footage_label':'Footage / Shooting','stage_editing_label':'Production','stage_review_label':'Review','stage_publish_label':'Done / Publish'}
@@ -183,7 +193,9 @@ def setup(v:SetupIn,s:Session=Depends(db)):
     return {'token':token(u),'user':user_json(u)}
 @app.post('/auth/login')
 def login(v:LoginIn,s:Session=Depends(db)):
-    u=s.scalar(select(User).where(User.email==v.email.lower()))
+    identifier=(v.name or v.email).strip()
+    if not identifier:raise HTTPException(400,'Enter name or email')
+    u=s.scalar(select(User).where(func.lower(User.name)==identifier.lower())) if v.name else s.scalar(select(User).where(func.lower(User.email)==identifier.lower()))
     if not u or not u.active or not hasher.verify(v.password,u.password_hash):raise HTTPException(401,'Invalid credentials')
     return {'token':token(u),'user':user_json(u)}
 @app.get('/auth/me')
@@ -193,10 +205,27 @@ def users(s:Session=Depends(db),u:User=Depends(current)):return [user_json(x) fo
 @app.post('/users')
 def add_user(v:UserIn,s:Session=Depends(db),u:User=Depends(current)):
     require(u,['admin'])
-    if v.role not in ['admin','manager','content','educator','production','reviewer','social','ads','viewer']:raise HTTPException(400,'Invalid role')
+    if v.role not in BASE_ROLES and v.role not in role_map(s):raise HTTPException(400,'Invalid role')
     if len(v.password)<10:raise HTTPException(400,'Password too short')
-    if s.scalar(select(User).where(User.email==v.email.lower())):raise HTTPException(409,'Email exists')
-    x=User(name=v.name,email=v.email.lower(),password_hash=hasher.hash(v.password),role=v.role);s.add(x);s.commit();s.refresh(x);return user_json(x)
+    if s.scalar(select(User).where(func.lower(User.name)==v.name.strip().lower())):raise HTTPException(409,'Name already exists')
+    if v.email and s.scalar(select(User).where(func.lower(User.email)==v.email.lower())):raise HTTPException(409,'Email exists')
+    x=User(name=v.name.strip(),email=v.email.lower() if v.email else None,password_hash=hasher.hash(v.password),role=v.role);s.add(x);s.commit();s.refresh(x);return user_json(x)
+class RoleIn(BaseModel):
+    name:str=Field(min_length=2,max_length=64)
+    permissions:str='viewer'
+@app.get('/roles')
+def list_roles(s:Session=Depends(db),u:User=Depends(current)):
+    return [{'name':r,'permissions':r} for r in BASE_ROLES]+[{'name':k,'permissions':v} for k,v in role_map(s).items()]
+@app.post('/roles')
+def create_role(v:RoleIn,s:Session=Depends(db),u:User=Depends(current)):
+    require(u,['admin'],s)
+    key=v.name.strip().lower()
+    if key in BASE_ROLES or key in role_map(s) or v.permissions not in BASE_ROLES or v.permissions=='admin':raise HTTPException(400,'Invalid role or permission')
+    roles=role_map(s);roles[key]=v.permissions
+    row=s.get(AppSetting,'custom_roles')
+    if row:row.value=json.dumps(roles)
+    else:s.add(AppSetting(key='custom_roles',value=json.dumps(roles)))
+    s.commit();return list_roles(s,u)
 @app.get('/projects')
 def projects(s:Session=Depends(db),u:User=Depends(current)):return [project_json(x) for x in s.scalars(select(Project).order_by(Project.id.desc()))]
 @app.post('/projects')
@@ -221,6 +250,7 @@ def add_task(v:TaskIn,s:Session=Depends(db),u:User=Depends(current)):
     if v.stage not in ['content','footage','editing','review','publish']:raise HTTPException(400,'Invalid stage')
     if v.assignee_id and not s.get(User,v.assignee_id):raise HTTPException(400,'Assignee not found')
     if v.planned_start and v.planned_end and v.planned_end<=v.planned_start:raise HTTPException(400,'Deadline must follow start')
+    v.planned_end=None # Script stage uses timer, no deadline
     if v.stage!='content':raise HTTPException(400,'New content must start in content stage')
     if not v.assignee_id:raise HTTPException(400,'Select a Content PIC')
     validate_task_meta(s,v.priority,v.creative_type,v.stage_pics)
@@ -245,6 +275,9 @@ def patch_task(task_id:int,v:TaskPatch,s:Session=Depends(db),u:User=Depends(curr
     if 'stage_pics' in changes:
         if u.role not in ['admin','manager']:raise HTTPException(403,'Only admin or manager can edit stage PICs')
         changes['stage_pics']=json.dumps(changes['stage_pics'])
+    if t.stage in ['content','review','publish'] and 'planned_end' in changes:changes['planned_end']=None
+    if 'footage_output_url' in changes and t.stage!='footage' and u.role not in ['admin','manager']:raise HTTPException(403,'Only footage team or admin can set footage output')
+    if 'production_output_url' in changes and t.stage!='editing' and u.role not in ['admin','manager']:raise HTTPException(403,'Only production team or admin can set production output')
     for k,val in changes.items():setattr(t,k,val)
     if t.planned_start and t.planned_end and t.planned_end<=t.planned_start:raise HTTPException(400,'Invalid deadline')
     s.add(Event(task_id=t.id,actor_id=u.id,action='updated',detail=','.join(changes)));s.commit();return task_json(t,s)
@@ -255,16 +288,19 @@ def assigned(t,u):
 def timer(task_id:int,action:str,s:Session=Depends(db),u:User=Depends(current)):
     t=s.get(Task,task_id)
     if not t:raise HTTPException(404,'Task not found')
-    assigned(t,u)
+    if t.stage=='review':require(u,['admin','manager','reviewer'],s)
+    else:assigned(t,u)
     if t.status in ['approved','published']:raise HTTPException(409,'Task already finalized')
     run=s.scalar(select(StageRun).where(StageRun.task_id==task_id,StageRun.completed_at.is_(None)).order_by(StageRun.id.desc()))
-    if not run or run.status!='accepted':raise HTTPException(409,'PIC must accept the handoff first')
+    if t.stage=='publish':raise HTTPException(409,'Publish has no timer')
+    if not run or (run.status!='accepted' and not (t.stage=='review' and run.status in ['completed_work','working_review'])):raise HTTPException(409,'PIC must accept the handoff first')
     open_entry=s.scalar(select(TimeEntry).where(TimeEntry.task_id==task_id,TimeEntry.user_id==u.id,TimeEntry.stopped_at.is_(None)))
     if action in ['start','resume']:
         if open_entry:raise HTTPException(409,'Timer already running')
-        if t.status not in ['todo','in_progress','revision']:raise HTTPException(409,'Task not in work state')
+        if t.status not in ['todo','in_progress','revision','ready_for_review']:raise HTTPException(409,'Task not in work state')
         if not t.actual_start:t.actual_start=now()
-        t.status='in_progress';s.add(TimeEntry(task_id=task_id,user_id=u.id,started_at=now()))
+        t.status='ready_for_review' if t.stage=='review' else 'in_progress';s.add(TimeEntry(task_id=task_id,user_id=u.id,started_at=now()))
+        if t.stage=='review':run.status='working_review'
     elif action in ['pause','stop']:
         if not open_entry:raise HTTPException(409,'Timer not running')
         open_entry.stopped_at=now()
@@ -307,7 +343,11 @@ def handoff(task_id:int,v:HandoffIn,s:Session=Depends(db),u:User=Depends(current
     elif u.id!=t.assignee_id and u.role not in ['admin','manager']:raise HTTPException(403,'Not assigned')
     if s.scalar(select(TimeEntry.id).where(TimeEntry.task_id==task_id,TimeEntry.stopped_at.is_(None))):raise HTTPException(409,'Pause all timers first')
     if s.scalar(select(WorkItem.id).where(WorkItem.task_id==task_id,WorkItem.stage==t.stage,WorkItem.status!='completed').limit(1)):raise HTTPException(409,'Complete all team work items before handoff')
+    if v.next_stage in ['review','publish']:
+        v.planned_start=None;v.planned_end=None
     if v.planned_start and v.planned_end and v.planned_end<=v.planned_start:raise HTTPException(400,'Deadline must follow start')
+    if t.stage=='footage' and not t.footage_output_url:raise HTTPException(409,'Add footage final output link before handoff')
+    if t.stage=='editing' and not t.production_output_url:raise HTTPException(409,'Add production final output link before handoff')
     pic=s.get(User,v.assignee_id) if v.next_stage in ['content','footage','editing'] and v.assignee_id else None
     if v.next_stage in ['content','footage','editing'] and (not pic or not pic.active):raise HTTPException(400,'Invalid PIC')
     if t.stage=='review' and t.status!='approved':raise HTTPException(409,'Reviewer approval required')
@@ -413,7 +453,7 @@ def review(task_id:int,v:ReviewIn,s:Session=Depends(db),u:User=Depends(current))
     if v.decision=='revision' and not v.comment.strip():raise HTTPException(400,'Revision comment required')
     if t.stage!='review':raise HTTPException(409,'Review must happen in review stage')
     run=s.scalar(select(StageRun).where(StageRun.task_id==task_id,StageRun.completed_at.is_(None)).order_by(StageRun.id.desc()))
-    if not run or run.status!='completed_work':raise HTTPException(409,'Review work must be completed first')
+    if not run or run.status!='completed_work':raise HTTPException(409,'Stop review timer before approving')
     t.status='approved' if v.decision=='approve' else 'revision'
     run.status='approved' if v.decision=='approve' else 'accepted'
     s.add(Review(task_id=t.id,reviewer_id=u.id,decision=v.decision,comment=v.comment));s.add(Event(task_id=t.id,actor_id=u.id,action='review_'+v.decision,detail=v.comment));s.commit();return task_json(t,s)
