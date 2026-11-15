@@ -110,7 +110,7 @@ class TaskIn(BaseModel): project_id:int; title:str=Field(min_length=2); stage:st
 class TaskPatch(BaseModel): card_color:Optional[str]=None; title:Optional[str]=None; stage:Optional[str]=None; assignee_id:Optional[int]=None; planned_start:Optional[datetime]=None; planned_end:Optional[datetime]=None; notes:Optional[str]=None; asset_url:Optional[str]=None
 class ReviewIn(BaseModel): decision:str; comment:str=''
 
-DEFAULT_SETTINGS={'app_name':'ContentOps 360','subtitle':'PRODUCTION WORKSPACE','login_title':'Masuk ke dashboard','login_description':'Production timeline, approval, dan KPI dalam satu workspace.','primary_color':'#2859e5','accent_color':'#69a3ff','sidebar_color':'#0b1630','background_color':'#f5f7fb'}
+DEFAULT_SETTINGS={'app_name':'ContentOps 360','subtitle':'PRODUCTION WORKSPACE','login_title':'Masuk ke dashboard','login_description':'Production timeline, approval, dan KPI dalam satu workspace.','primary_color':'#2859e5','accent_color':'#69a3ff','sidebar_color':'#0b1630','background_color':'#f5f7fb','stage_content_color':'#777777','stage_footage_color':'#287dcc','stage_editing_color':'#ad8526','stage_review_color':'#8055a5','stage_publish_color':'#27885e'}
 class SettingsIn(BaseModel):
     app_name:str=Field(min_length=2,max_length=80)
     subtitle:str=Field(max_length=120)
@@ -120,6 +120,11 @@ class SettingsIn(BaseModel):
     accent_color:str
     sidebar_color:str
     background_color:str
+    stage_content_color:str='#777777'
+    stage_footage_color:str='#287dcc'
+    stage_editing_color:str='#ad8526'
+    stage_review_color:str='#8055a5'
+    stage_publish_color:str='#27885e'
 
 @app.get('/settings')
 def get_settings(s:Session=Depends(db)):
@@ -132,7 +137,7 @@ def update_settings(v:SettingsIn,s:Session=Depends(db),u:User=Depends(current)):
     require(u,['admin'])
     data=v.model_dump()
     import re
-    for key in ['primary_color','accent_color','sidebar_color','background_color']:
+    for key in ['primary_color','accent_color','sidebar_color','background_color','stage_content_color','stage_footage_color','stage_editing_color','stage_review_color','stage_publish_color']:
         if not re.fullmatch(r'#[0-9a-fA-F]{6}',data[key]):raise HTTPException(400,'Invalid hex color: '+key)
     for key,value in data.items():
         row=s.get(AppSetting,key)
@@ -336,3 +341,33 @@ def clear_board(v:ClearBoardIn,s:Session=Depends(db),u:User=Depends(current)):
         s.delete(t)
     s.commit()
     return {'ok':True,'deleted_tasks':len(target)}
+
+class ProjectPatch(BaseModel):
+    title:Optional[str]=Field(default=None,min_length=2,max_length=200)
+    description:Optional[str]=None
+
+@app.patch('/projects/{project_id}')
+def update_project(project_id:int,v:ProjectPatch,s:Session=Depends(db),u:User=Depends(current)):
+    require(u,['admin'])
+    p=s.get(Project,project_id)
+    if not p:raise HTTPException(404,'Project not found')
+    for key,value in v.model_dump(exclude_unset=True).items():
+        if value is not None:setattr(p,key,value)
+    s.commit();return project_json(p)
+
+class ProjectDeleteIn(BaseModel):
+    confirmation:str
+
+@app.post('/projects/{project_id}/delete')
+def remove_project(project_id:int,v:ProjectDeleteIn,s:Session=Depends(db),u:User=Depends(current)):
+    require(u,['admin'])
+    p=s.get(Project,project_id)
+    if not p:raise HTTPException(404,'Project not found')
+    if v.confirmation!=f'HAPUS PROJECT {project_id}':raise HTTPException(400,'Confirmation phrase mismatch')
+    task_ids=[t.id for t in s.scalars(select(Task).where(Task.project_id==project_id))]
+    for task_id in task_ids:
+        for model in [TimeEntry,Review,Event,StageRun]:
+            for row in s.scalars(select(model).where(model.task_id==task_id)):s.delete(row)
+        s.delete(s.get(Task,task_id))
+    s.delete(p);s.commit()
+    return {'ok':True,'deleted_project_id':project_id,'deleted_tasks':len(task_ids)}
