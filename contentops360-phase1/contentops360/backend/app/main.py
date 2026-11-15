@@ -1,4 +1,5 @@
 import os
+import json
 from datetime import datetime, timezone, timedelta
 from typing import Optional
 from contextlib import asynccontextmanager
@@ -33,7 +34,7 @@ class Project(Base):
     id=Column(Integer,primary_key=True); title=Column(String(200),nullable=False); description=Column(Text,default=''); created_by=Column(Integer,ForeignKey('users.id')); created_at=Column(DateTime(timezone=True),default=now)
 class Task(Base):
     __tablename__='tasks'
-    id=Column(Integer,primary_key=True); project_id=Column(Integer,ForeignKey('projects.id'),nullable=False); title=Column(String(200),nullable=False); stage=Column(String(32),default='content'); status=Column(String(32),default='todo'); assignee_id=Column(Integer,ForeignKey('users.id')); planned_start=Column(DateTime(timezone=True)); planned_end=Column(DateTime(timezone=True)); actual_start=Column(DateTime(timezone=True)); actual_end=Column(DateTime(timezone=True)); asset_url=Column(Text,default=''); notes=Column(Text,default=''); card_color=Column(String(7),default='#ffffff'); created_at=Column(DateTime(timezone=True),default=now)
+    id=Column(Integer,primary_key=True); project_id=Column(Integer,ForeignKey('projects.id'),nullable=False); title=Column(String(200),nullable=False); stage=Column(String(32),default='content'); status=Column(String(32),default='todo'); assignee_id=Column(Integer,ForeignKey('users.id')); planned_start=Column(DateTime(timezone=True)); planned_end=Column(DateTime(timezone=True)); actual_start=Column(DateTime(timezone=True)); actual_end=Column(DateTime(timezone=True)); asset_url=Column(Text,default=''); notes=Column(Text,default=''); card_color=Column(String(7),default='#ffffff'); priority=Column(String(20),default='medium'); creative_type=Column(String(40),default='video_ads'); stage_pics=Column(Text,default='{}'); created_at=Column(DateTime(timezone=True),default=now)
 class StageRun(Base):
     __tablename__='stage_runs'
     id=Column(Integer,primary_key=True)
@@ -63,6 +64,8 @@ async def lifespan(app):
     with engine.begin() as conn:
         if 'card_color' not in [x['name'] for x in inspect(conn).get_columns('tasks')]:
             conn.execute(text("ALTER TABLE tasks ADD COLUMN card_color VARCHAR(7) DEFAULT '#ffffff'"))
+        for col,sql in [('priority',"ALTER TABLE tasks ADD COLUMN priority VARCHAR(20) DEFAULT 'medium'"),('creative_type',"ALTER TABLE tasks ADD COLUMN creative_type VARCHAR(40) DEFAULT 'video_ads'"),('stage_pics',"ALTER TABLE tasks ADD COLUMN stage_pics TEXT DEFAULT '{}' ")]:
+            if col not in [x['name'] for x in inspect(conn).get_columns('tasks')]:conn.execute(text(sql))
     # Non-destructive migration for existing Phase 1 tasks.
     with SessionLocal() as s:
         existing=s.scalars(select(Task)).all()
@@ -100,17 +103,17 @@ def task_json(t,s):
     stage_seconds=0
     if run:
         stage_seconds=sum(max(0,((e.stopped_at or now())-e.started_at).total_seconds()) for e in entries if e.user_id==run.assignee_id and e.started_at >= (run.accepted_at or run.received_at))
-    return {'handoff_status':run.status if run else None,'stage_run_id':run.id if run else None,'stage_seconds':round(stage_seconds),'id':t.id,'project_id':t.project_id,'title':t.title,'stage':t.stage,'status':t.status,'assignee_id':t.assignee_id,'planned_start':stamp(t.planned_start),'planned_end':stamp(t.planned_end),'actual_start':stamp(t.actual_start),'actual_end':stamp(t.actual_end),'asset_url':t.asset_url,'notes':t.notes,'card_color':t.card_color or '#ffffff','tracked_seconds':round(seconds),'timer_running':any(e.stopped_at is None for e in entries)}
+    return {'handoff_status':run.status if run else None,'stage_run_id':run.id if run else None,'stage_seconds':round(stage_seconds),'id':t.id,'project_id':t.project_id,'title':t.title,'stage':t.stage,'status':t.status,'assignee_id':t.assignee_id,'planned_start':stamp(t.planned_start),'planned_end':stamp(t.planned_end),'actual_start':stamp(t.actual_start),'actual_end':stamp(t.actual_end),'asset_url':t.asset_url,'notes':t.notes,'card_color':t.card_color or '#ffffff','priority':t.priority or 'medium','creative_type':t.creative_type or 'video_ads','stage_pics':json.loads(t.stage_pics or '{}'),'tracked_seconds':round(seconds),'timer_running':any(e.stopped_at is None for e in entries)}
 
 class LoginIn(BaseModel): email:str; password:str
 class SetupIn(LoginIn): name:str=Field(min_length=2)
 class UserIn(SetupIn): role:str='content'
 class ProjectIn(BaseModel): title:str=Field(min_length=2); description:str=''
-class TaskIn(BaseModel): project_id:int; title:str=Field(min_length=2); stage:str='content'; assignee_id:Optional[int]=None; planned_start:Optional[datetime]=None; planned_end:Optional[datetime]=None; notes:str=''; asset_url:str=''
-class TaskPatch(BaseModel): card_color:Optional[str]=None; title:Optional[str]=None; stage:Optional[str]=None; assignee_id:Optional[int]=None; planned_start:Optional[datetime]=None; planned_end:Optional[datetime]=None; notes:Optional[str]=None; asset_url:Optional[str]=None
+class TaskIn(BaseModel): project_id:int; title:str=Field(min_length=2); stage:str='content'; assignee_id:Optional[int]=None; planned_start:Optional[datetime]=None; planned_end:Optional[datetime]=None; notes:str=''; asset_url:str=''; priority:str='medium'; creative_type:str='video_ads'; stage_pics:dict[str,list[int]]=Field(default_factory=dict)
+class TaskPatch(BaseModel): priority:Optional[str]=None; creative_type:Optional[str]=None; stage_pics:Optional[dict[str,list[int]]]=None; card_color:Optional[str]=None; title:Optional[str]=None; stage:Optional[str]=None; assignee_id:Optional[int]=None; planned_start:Optional[datetime]=None; planned_end:Optional[datetime]=None; notes:Optional[str]=None; asset_url:Optional[str]=None
 class ReviewIn(BaseModel): decision:str; comment:str=''
 
-DEFAULT_SETTINGS={'app_name':'ContentOps 360','subtitle':'PRODUCTION WORKSPACE','login_title':'Masuk ke dashboard','login_description':'Production timeline, approval, dan KPI dalam satu workspace.','primary_color':'#2859e5','accent_color':'#69a3ff','sidebar_color':'#0b1630','background_color':'#f5f7fb','stage_content_color':'#777777','stage_footage_color':'#287dcc','stage_editing_color':'#ad8526','stage_review_color':'#8055a5','stage_publish_color':'#27885e'}
+DEFAULT_SETTINGS={'app_name':'ContentOps 360','subtitle':'PRODUCTION WORKSPACE','login_title':'Masuk ke dashboard','login_description':'Production timeline, approval, dan KPI dalam satu workspace.','primary_color':'#2859e5','accent_color':'#69a3ff','sidebar_color':'#0b1630','background_color':'#f5f7fb','stage_content_color':'#777777','stage_footage_color':'#287dcc','stage_editing_color':'#ad8526','stage_review_color':'#8055a5','stage_publish_color':'#27885e','stage_content_label':'Script','stage_footage_label':'Footage / Shooting','stage_editing_label':'Production','stage_review_label':'Review','stage_publish_label':'Done / Publish'}
 class SettingsIn(BaseModel):
     app_name:str=Field(min_length=2,max_length=80)
     subtitle:str=Field(max_length=120)
@@ -125,6 +128,11 @@ class SettingsIn(BaseModel):
     stage_editing_color:str='#ad8526'
     stage_review_color:str='#8055a5'
     stage_publish_color:str='#27885e'
+    stage_content_label:str=Field(default='Script',min_length=2,max_length=50)
+    stage_footage_label:str=Field(default='Footage / Shooting',min_length=2,max_length=50)
+    stage_editing_label:str=Field(default='Production',min_length=2,max_length=50)
+    stage_review_label:str=Field(default='Review',min_length=2,max_length=50)
+    stage_publish_label:str=Field(default='Done / Publish',min_length=2,max_length=50)
 
 @app.get('/settings')
 def get_settings(s:Session=Depends(db)):
@@ -180,6 +188,13 @@ def tasks(project_id:Optional[int]=None,s:Session=Depends(db),u:User=Depends(cur
     q=select(Task).order_by(Task.id.desc())
     if project_id:q=q.where(Task.project_id==project_id)
     return [task_json(t,s) for t in s.scalars(q)]
+def validate_task_meta(s,priority,creative_type,pics):
+    if priority not in ['low','medium','high','urgent']:raise HTTPException(400,'Invalid priority')
+    if creative_type not in ['video_ads','image_ads','reels','shorts','carousel','static_post','story','livestream','article','other']:raise HTTPException(400,'Invalid creative type')
+    for stage,ids in pics.items():
+        if stage not in ['content','footage','editing','review','publish'] or len(ids)>20 or len(ids)!=len(set(ids)):raise HTTPException(400,'Invalid stage PIC list')
+        if any(not s.get(User,uid) for uid in ids):raise HTTPException(400,'PIC user not found')
+
 @app.post('/tasks')
 def add_task(v:TaskIn,s:Session=Depends(db),u:User=Depends(current)):
     require(u,['admin','manager','content'])
@@ -189,7 +204,9 @@ def add_task(v:TaskIn,s:Session=Depends(db),u:User=Depends(current)):
     if v.planned_start and v.planned_end and v.planned_end<=v.planned_start:raise HTTPException(400,'Deadline must follow start')
     if v.stage!='content':raise HTTPException(400,'New content must start in content stage')
     if not v.assignee_id:raise HTTPException(400,'Select a Content PIC')
-    t=Task(**v.model_dump());s.add(t);s.flush()
+    validate_task_meta(s,v.priority,v.creative_type,v.stage_pics)
+    pics=dict(v.stage_pics);pics['content']=list(dict.fromkeys([v.assignee_id]+pics.get('content',[])))
+    data=v.model_dump(exclude={'stage_pics'});t=Task(**data,stage_pics=json.dumps(pics));s.add(t);s.flush()
     s.add(StageRun(task_id=t.id,stage='content',assignee_id=v.assignee_id,status='pending_acceptance',planned_end=v.planned_end))
     s.add(Event(task_id=t.id,actor_id=u.id,action='created'));s.commit();s.refresh(t);return task_json(t,s)
 @app.patch('/tasks/{task_id}')
@@ -204,6 +221,11 @@ def patch_task(task_id:int,v:TaskPatch,s:Session=Depends(db),u:User=Depends(curr
     if 'assignee_id' in changes and changes['assignee_id'] is not None and not s.get(User,changes['assignee_id']):raise HTTPException(400,'Assignee not found')
     if 'card_color' in changes and (changes['card_color'] is None or not __import__('re').fullmatch(r'#[0-9a-fA-F]{6}',changes['card_color'])):raise HTTPException(400,'Invalid card color')
     if 'card_color' in changes and u.role!='admin':raise HTTPException(403,'Only admin can change card color')
+    if any(k in changes for k in ['priority','creative_type','stage_pics']):
+        validate_task_meta(s,changes.get('priority',t.priority or 'medium'),changes.get('creative_type',t.creative_type or 'video_ads'),changes.get('stage_pics',json.loads(t.stage_pics or '{}')))
+    if 'stage_pics' in changes:
+        if u.role not in ['admin','manager']:raise HTTPException(403,'Only admin or manager can edit stage PICs')
+        changes['stage_pics']=json.dumps(changes['stage_pics'])
     for k,val in changes.items():setattr(t,k,val)
     if t.planned_start and t.planned_end and t.planned_end<=t.planned_start:raise HTTPException(400,'Invalid deadline')
     s.add(Event(task_id=t.id,actor_id=u.id,action='updated',detail=','.join(changes)));s.commit();return task_json(t,s)
@@ -270,6 +292,7 @@ def handoff(task_id:int,v:HandoffIn,s:Session=Depends(db),u:User=Depends(current
     old=t.stage;t.stage=v.next_stage;t.assignee_id=pic.id;t.status='pending_acceptance'
     t.actual_start=None;t.actual_end=None
     t.planned_start=v.planned_start;t.planned_end=v.planned_end
+    pics=json.loads(t.stage_pics or '{}');pics[v.next_stage]=list(dict.fromkeys([pic.id]+pics.get(v.next_stage,[])));t.stage_pics=json.dumps(pics)
     s.add(StageRun(task_id=task_id,stage=v.next_stage,assignee_id=pic.id,status='pending_acceptance',planned_end=v.planned_end))
     s.add(Event(task_id=task_id,actor_id=u.id,action='handoff',detail=f'{old} -> {v.next_stage}; PIC {pic.id}'))
     s.commit();return task_json(t,s)
