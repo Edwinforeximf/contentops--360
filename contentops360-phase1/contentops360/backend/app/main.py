@@ -171,7 +171,7 @@ def get_settings(s:Session=Depends(db)):
 
 @app.patch('/settings')
 def update_settings(v:SettingsIn,s:Session=Depends(db),u:User=Depends(current)):
-    require(u,['admin'])
+    require(u,['admin'],s)
     data=v.model_dump()
     import re
     for key in ['primary_color','accent_color','sidebar_color','background_color','stage_content_color','stage_footage_color','stage_editing_color','stage_review_color','stage_publish_color']:
@@ -199,12 +199,12 @@ def login(v:LoginIn,s:Session=Depends(db)):
     if not u or not u.active or not hasher.verify(v.password,u.password_hash):raise HTTPException(401,'Invalid credentials')
     return {'token':token(u),'user':user_json(u)}
 @app.get('/auth/me')
-def me(u:User=Depends(current)):return user_json(u)
+def me(u:User=Depends(current),s:Session=Depends(db)):return {**user_json(u),'permission_role':effective_role(u,s)}
 @app.get('/users')
 def users(s:Session=Depends(db),u:User=Depends(current)):return [user_json(x) for x in s.scalars(select(User).order_by(User.name))]
 @app.post('/users')
 def add_user(v:UserIn,s:Session=Depends(db),u:User=Depends(current)):
-    require(u,['admin'])
+    require(u,['admin'],s)
     if v.role not in BASE_ROLES and v.role not in role_map(s):raise HTTPException(400,'Invalid role')
     if len(v.password)<10:raise HTTPException(400,'Password too short')
     if s.scalar(select(User).where(func.lower(User.name)==v.name.strip().lower())):raise HTTPException(409,'Name already exists')
@@ -230,7 +230,7 @@ def create_role(v:RoleIn,s:Session=Depends(db),u:User=Depends(current)):
 def projects(s:Session=Depends(db),u:User=Depends(current)):return [project_json(x) for x in s.scalars(select(Project).order_by(Project.id.desc()))]
 @app.post('/projects')
 def add_project(v:ProjectIn,s:Session=Depends(db),u:User=Depends(current)):
-    require(u,['admin','manager','content']);p=Project(**v.model_dump(),created_by=u.id);s.add(p);s.commit();s.refresh(p);return project_json(p)
+    require(u,['admin','manager','content'],s);p=Project(**v.model_dump(),created_by=u.id);s.add(p);s.commit();s.refresh(p);return project_json(p)
 @app.get('/tasks')
 def tasks(project_id:Optional[int]=None,s:Session=Depends(db),u:User=Depends(current)):
     q=select(Task).order_by(Task.id.desc())
@@ -245,7 +245,7 @@ def validate_task_meta(s,priority,creative_type,pics):
 
 @app.post('/tasks')
 def add_task(v:TaskIn,s:Session=Depends(db),u:User=Depends(current)):
-    require(u,['admin','manager','content'])
+    require(u,['admin','manager','content'],s)
     if not s.get(Project,v.project_id):raise HTTPException(404,'Project not found')
     if v.stage not in ['content','footage','editing','review','publish']:raise HTTPException(400,'Invalid stage')
     if v.assignee_id and not s.get(User,v.assignee_id):raise HTTPException(400,'Assignee not found')
@@ -262,34 +262,34 @@ def add_task(v:TaskIn,s:Session=Depends(db),u:User=Depends(current)):
 def patch_task(task_id:int,v:TaskPatch,s:Session=Depends(db),u:User=Depends(current)):
     t=s.get(Task,task_id)
     if not t:raise HTTPException(404,'Task not found')
-    if u.role not in ['admin','manager'] and t.assignee_id!=u.id:raise HTTPException(403,'Not assigned')
-    if t.status in ['approved','published'] and u.role not in ['admin','manager']:raise HTTPException(409,'Task locked')
+    if effective_role(u,s) not in ['admin','manager'] and t.assignee_id!=u.id:raise HTTPException(403,'Not assigned')
+    if t.status in ['approved','published'] and effective_role(u,s) not in ['admin','manager']:raise HTTPException(409,'Task locked')
     changes=v.model_dump(exclude_unset=True)
     if 'stage' in changes:raise HTTPException(409,'Use handoff endpoint to move stages')
     if 'assignee_id' in changes:raise HTTPException(409,'Use handoff endpoint to change PIC')
     if 'assignee_id' in changes and changes['assignee_id'] is not None and not s.get(User,changes['assignee_id']):raise HTTPException(400,'Assignee not found')
     if 'card_color' in changes and (changes['card_color'] is None or not __import__('re').fullmatch(r'#[0-9a-fA-F]{6}',changes['card_color'])):raise HTTPException(400,'Invalid card color')
-    if 'card_color' in changes and u.role!='admin':raise HTTPException(403,'Only admin can change card color')
+    if 'card_color' in changes and effective_role(u,s)!='admin':raise HTTPException(403,'Only admin can change card color')
     if any(k in changes for k in ['priority','creative_type','stage_pics']):
         validate_task_meta(s,changes.get('priority',t.priority or 'medium'),changes.get('creative_type',t.creative_type or 'video_ads'),changes.get('stage_pics',json.loads(t.stage_pics or '{}')))
     if 'stage_pics' in changes:
-        if u.role not in ['admin','manager']:raise HTTPException(403,'Only admin or manager can edit stage PICs')
+        if effective_role(u,s) not in ['admin','manager']:raise HTTPException(403,'Only admin or manager can edit stage PICs')
         changes['stage_pics']=json.dumps(changes['stage_pics'])
     if t.stage in ['content','review','publish'] and 'planned_end' in changes:changes['planned_end']=None
-    if 'footage_output_url' in changes and t.stage!='footage' and u.role not in ['admin','manager']:raise HTTPException(403,'Only footage team or admin can set footage output')
-    if 'production_output_url' in changes and t.stage!='editing' and u.role not in ['admin','manager']:raise HTTPException(403,'Only production team or admin can set production output')
+    if 'footage_output_url' in changes and t.stage!='footage' and effective_role(u,s) not in ['admin','manager']:raise HTTPException(403,'Only footage team or admin can set footage output')
+    if 'production_output_url' in changes and t.stage!='editing' and effective_role(u,s) not in ['admin','manager']:raise HTTPException(403,'Only production team or admin can set production output')
     for k,val in changes.items():setattr(t,k,val)
     if t.planned_start and t.planned_end and t.planned_end<=t.planned_start:raise HTTPException(400,'Invalid deadline')
     s.add(Event(task_id=t.id,actor_id=u.id,action='updated',detail=','.join(changes)));s.commit();return task_json(t,s)
 
-def assigned(t,u):
-    if u.role not in ['admin','manager'] and t.assignee_id!=u.id:raise HTTPException(403,'Not assigned')
+def assigned(t,u,s):
+    if effective_role(u,s) not in ['admin','manager'] and t.assignee_id!=u.id:raise HTTPException(403,'Not assigned')
 @app.post('/tasks/{task_id}/timer/{action}')
 def timer(task_id:int,action:str,s:Session=Depends(db),u:User=Depends(current)):
     t=s.get(Task,task_id)
     if not t:raise HTTPException(404,'Task not found')
     if t.stage=='review':require(u,['admin','manager','reviewer'],s)
-    else:assigned(t,u)
+    else:assigned(t,u,s)
     if t.status in ['approved','published']:raise HTTPException(409,'Task already finalized')
     run=s.scalar(select(StageRun).where(StageRun.task_id==task_id,StageRun.completed_at.is_(None)).order_by(StageRun.id.desc()))
     if t.stage=='publish':raise HTTPException(409,'Publish has no timer')
@@ -339,8 +339,8 @@ def handoff(task_id:int,v:HandoffIn,s:Session=Depends(db),u:User=Depends(current
     run=s.scalar(select(StageRun).where(StageRun.task_id==task_id,StageRun.completed_at.is_(None)).order_by(StageRun.id.desc()))
     if not run or run.status not in ['completed_work','approved']:raise HTTPException(409,'Complete current stage before handoff')
     if t.stage=='review':
-        require(u,['admin','manager','reviewer'])
-    elif u.id!=t.assignee_id and u.role not in ['admin','manager']:raise HTTPException(403,'Not assigned')
+        require(u,['admin','manager','reviewer'],s)
+    elif u.id!=t.assignee_id and effective_role(u,s) not in ['admin','manager']:raise HTTPException(403,'Not assigned')
     if s.scalar(select(TimeEntry.id).where(TimeEntry.task_id==task_id,TimeEntry.stopped_at.is_(None))):raise HTTPException(409,'Pause all timers first')
     if s.scalar(select(WorkItem.id).where(WorkItem.task_id==task_id,WorkItem.stage==t.stage,WorkItem.status!='completed').limit(1)):raise HTTPException(409,'Complete all team work items before handoff')
     if v.next_stage in ['review','publish']:
@@ -382,7 +382,7 @@ def list_work_items(task_id:int,s:Session=Depends(db),u:User=Depends(current)):
 
 @app.post('/tasks/{task_id}/work-items')
 def add_work_item(task_id:int,v:WorkItemIn,s:Session=Depends(db),u:User=Depends(current)):
-    require(u,['admin','manager'])
+    require(u,['admin','manager'],s)
     t=s.get(Task,task_id)
     if not t:raise HTTPException(404,'Task not found')
     if v.stage!=t.stage:raise HTTPException(409,'Create work items in current stage only')
@@ -445,7 +445,7 @@ def stage_history(task_id:int,s:Session=Depends(db),u:User=Depends(current)):
 
 @app.post('/tasks/{task_id}/review')
 def review(task_id:int,v:ReviewIn,s:Session=Depends(db),u:User=Depends(current)):
-    require(u,['admin','manager','reviewer'])
+    require(u,['admin','manager','reviewer'],s)
     t=s.get(Task,task_id)
     if not t:raise HTTPException(404,'Task not found')
     if t.status not in ['ready_for_review','revision']:raise HTTPException(409,'Task must be ready for review')
@@ -459,7 +459,7 @@ def review(task_id:int,v:ReviewIn,s:Session=Depends(db),u:User=Depends(current))
     s.add(Review(task_id=t.id,reviewer_id=u.id,decision=v.decision,comment=v.comment));s.add(Event(task_id=t.id,actor_id=u.id,action='review_'+v.decision,detail=v.comment));s.commit();return task_json(t,s)
 @app.post('/tasks/{task_id}/publish')
 def publish(task_id:int,s:Session=Depends(db),u:User=Depends(current)):
-    require(u,['admin','manager','social'])
+    require(u,['admin','manager','social'],s)
     t=s.get(Task,task_id)
     if not t:raise HTTPException(404,'Task not found')
     if t.stage!='publish' or t.status not in ['ready_to_publish','stage_complete','ready_for_review']:raise HTTPException(409,'Task must be in Publish stage')
@@ -478,7 +478,7 @@ def dashboard(s:Session=Depends(db),u:User=Depends(current)):
 
 @app.delete('/tasks/{task_id}')
 def delete_task(task_id:int,s:Session=Depends(db),u:User=Depends(current)):
-    require(u,['admin'])
+    require(u,['admin'],s)
     t=s.get(Task,task_id)
     if not t:raise HTTPException(404,'Task not found')
     for model in [TimeEntry,Review,Event,StageRun]:
@@ -492,7 +492,7 @@ class ClearBoardIn(BaseModel):
 
 @app.post('/admin/clear-board')
 def clear_board(v:ClearBoardIn,s:Session=Depends(db),u:User=Depends(current)):
-    require(u,['admin'])
+    require(u,['admin'],s)
     if v.confirmation!='HAPUS SEMUA TASK':raise HTTPException(400,'Confirmation phrase mismatch')
     q=select(Task)
     if v.project_id is not None:
@@ -512,7 +512,7 @@ class ProjectPatch(BaseModel):
 
 @app.patch('/projects/{project_id}')
 def update_project(project_id:int,v:ProjectPatch,s:Session=Depends(db),u:User=Depends(current)):
-    require(u,['admin'])
+    require(u,['admin'],s)
     p=s.get(Project,project_id)
     if not p:raise HTTPException(404,'Project not found')
     for key,value in v.model_dump(exclude_unset=True).items():
@@ -524,7 +524,7 @@ class ProjectDeleteIn(BaseModel):
 
 @app.post('/projects/{project_id}/delete')
 def remove_project(project_id:int,v:ProjectDeleteIn,s:Session=Depends(db),u:User=Depends(current)):
-    require(u,['admin'])
+    require(u,['admin'],s)
     p=s.get(Project,project_id)
     if not p:raise HTTPException(404,'Project not found')
     if v.confirmation!=f'HAPUS PROJECT {project_id}':raise HTTPException(400,'Confirmation phrase mismatch')
